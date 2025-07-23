@@ -32,7 +32,6 @@ db.exec(`
   );
 `);
 
-const K_FACTOR = 32;
 
 // 3) Record one day’s results and update Elo + store points
 export function recordDailyResults({ puzzle, results }) {
@@ -50,6 +49,8 @@ export function recordDailyResults({ puzzle, results }) {
   const after = { ...before };
   for (const A of results) {
     for (const B of results) {
+      const rows = connection.execute('SELECT COUNT(puzzle) AS count FROM plays WHERE user_id = ?');
+      const K_FACTOR = Math.max(35-rows[0].count*2,10);
       if (A.userId === B.userId) continue;
       let scoreA;
       if (A.guesses === null)         scoreA = 0;
