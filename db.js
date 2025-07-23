@@ -58,8 +58,8 @@ export function recordDailyResults({ puzzle, results }) {
       else if (A.guesses > B.guesses) scoreA = 0;
       else                             scoreA = 0.5;
 
-      const Ra = after[A.userId];
-      const Rb = after[B.userId];
+      const Ra = before[A.userId];
+      const Rb = before[B.userId];
       const expectedA = 1 / (1 + 10 ** ((Rb - Ra) / 400));
       after[A.userId] = Ra + K_FACTOR * (scoreA - expectedA);
     }
