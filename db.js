@@ -1,12 +1,28 @@
 // db.js
 import Database from 'better-sqlite3';
 import path from 'path';
-console.log('DB file at:', path.resolve(process.env.DB_FILE || './wordle_stats.db'));
 
 // 1) Open (or create) the DB file
-const db = new Database(process.env.DB_FILE || 'wordle_stats.db');
+const dbPath = process.env.DB_FILE || './wordle_stats.db';
+console.log('DB file at:', path.resolve(dbPath));
+const db = new Database(dbPath);
 
-// 2) Ensure tables exist, now including points
+// 2) Create necessary tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS plays (
+    puzzle    INTEGER,
+    user_id   TEXT,
+    guesses   INTEGER,     -- null = fail
+    points    INTEGER,     -- from pointsMap
+    PRIMARY KEY(puzzle, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS ratings (
+    user_id TEXT PRIMARY KEY,
+    elo     REAL DEFAULT 1500
+  );
+`);
+
 const pointsMap = {
   1: 25,
   2: 18,
@@ -17,56 +33,53 @@ const pointsMap = {
   null: -5,
 };
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS plays (
-    puzzle    INTEGER,
-    user_id   TEXT,
-    guesses   INTEGER,     -- null for failures
-    points    INTEGER,     -- points awarded per play
-    PRIMARY KEY(puzzle, user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS ratings (
-    user_id TEXT PRIMARY KEY,
-    elo     REAL DEFAULT 1500
-  );
-`);
-
-
-// 3) Record one day’s results and update Elo + store points
+// 3) Main Elo + scoring function
 export function recordDailyResults({ puzzle, results }) {
-  // results = [ { userId, guesses|null }, … ]
+  // results = [{ userId, guesses (or null) }]
 
-  // 3a) Load “before” ratings (default 1500)
   const getElo = db.prepare(`SELECT elo FROM ratings WHERE user_id = ?`);
+  const getPlayCount = db.prepare(`SELECT COUNT(*) AS count FROM plays WHERE user_id = ?`);
+
   const before = {};
+  const after = {};
+  const kFactors = {};
+
+  // Load Elo and K-factor for each player
   for (const { userId } of results) {
-    const row = getElo.get(userId);
-    before[userId] = row ? row.elo : 1500;
+    const eloRow = getElo.get(userId);
+    const countRow = getPlayCount.get(userId);
+
+    const elo = eloRow?.elo ?? 1500;
+    const count = countRow?.count ?? 0;
+    const K = Math.max(35 - count * 2, 10);
+
+    before[userId] = elo;
+    after[userId] = elo;
+    kFactors[userId] = K;
   }
 
-  // 3b) Compute new ratings pairwise
-  const after = { ...before };
+  // Pairwise Elo calculation (using only `before`)
   for (const A of results) {
     for (const B of results) {
-      const rows = connection.execute('SELECT COUNT(puzzle) AS count FROM plays WHERE user_id = ?');
-      const K_FACTOR = Math.max(35-rows[0].count*2,10);
       if (A.userId === B.userId) continue;
+
       let scoreA;
       if (A.guesses === null)         scoreA = 0;
       else if (B.guesses === null)    scoreA = 1;
       else if (A.guesses < B.guesses) scoreA = 1;
       else if (A.guesses > B.guesses) scoreA = 0;
-      else                             scoreA = 0.5;
+      else                            scoreA = 0.5;
 
       const Ra = before[A.userId];
       const Rb = before[B.userId];
       const expectedA = 1 / (1 + 10 ** ((Rb - Ra) / 400));
-      after[A.userId] = Ra + K_FACTOR * (scoreA - expectedA);
+      const K = kFactors[A.userId];
+
+      after[A.userId] += K * (scoreA - expectedA);
     }
   }
 
-  // 3c) Persist in one transaction
+  // Save all results + Elo in a single transaction
   const insertPlay = db.prepare(`
     INSERT OR REPLACE INTO plays (puzzle, user_id, guesses, points)
     VALUES (@puzzle, @userId, @guesses, @points)
@@ -74,7 +87,7 @@ export function recordDailyResults({ puzzle, results }) {
   const upsertElo = db.prepare(`
     INSERT INTO ratings (user_id, elo)
     VALUES (@userId, @elo)
-    ON CONFLICT(user_id) DO UPDATE SET elo=excluded.elo
+    ON CONFLICT(user_id) DO UPDATE SET elo = excluded.elo
   `);
 
   const txn = db.transaction(() => {
@@ -92,22 +105,32 @@ export function recordDailyResults({ puzzle, results }) {
       });
     }
   });
+
   txn();
 }
 
-// 4) Fetch stats for leaderboard, including total points
+// 4) Leaderboard stats
 export function getStats() {
   return db.prepare(`
     SELECT
       r.user_id,
       r.elo,
-      COUNT(p.puzzle)      AS games,
+      COUNT(p.puzzle) AS games,
       SUM(CASE WHEN p.guesses IS NOT NULL THEN 1 ELSE 0 END) AS wins,
-      ROUND(AVG(p.guesses),2)         AS avg_guesses,
-      SUM(p.points)                   AS total_points
+      ROUND(AVG(p.guesses), 2) AS avg_guesses,
+      SUM(p.points) AS total_points
     FROM ratings r
     LEFT JOIN plays p ON p.user_id = r.user_id
     GROUP BY r.user_id
     ORDER BY r.elo DESC
   `).all();
 }
+
+export function resetDatabase() {
+    db.exec(`
+      DELETE FROM plays;
+      DELETE FROM ratings;
+    `);
+    console.log('🧼 Wordle DB wiped: all plays and ratings cleared.');
+  }
+  

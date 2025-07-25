@@ -2,8 +2,13 @@
 import { Client, GatewayIntentBits, Events } from 'discord.js';
 import dotenv from 'dotenv';
 import { recordDailyResults, getStats } from './db.js';
+import { resetDatabase } from './db.js';
 
 dotenv.config();
+
+if (process.env.RESET_WORDLE_DB === 'true') {
+    resetDatabase();
+  }
 
 // ----------------------------------------------------------------------------
 // Configuration
@@ -145,3 +150,6 @@ client.on(Events.MessageCreate, async msg => {
 // Login
 // ----------------------------------------------------------------------------
 client.login(TOKEN).catch(err => console.error('❌ Login failed:', err));
+
+
+  
