@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Events } from 'discord.js';
 import dotenv from 'dotenv';
 import { recordDailyResults, getStats } from './db.js';
 import { resetDatabase } from './db.js';
+import { usernameToId } from './UserMapping.js';
 
 dotenv.config();
 
@@ -42,24 +43,40 @@ function parseWordleMessage(msg) {
   const content = msg.content ?? '';
   if (!content.startsWith('**Your group is on')) return null;
 
-  // use message ID as puzzle identifier
   const puzzle = msg.id;
-
-  // Parse each score line in the content
   const results = [];
+  const seen = new Set();
+
   for (let line of content.split('\n')) {
-    // strip crown emoji
     line = line.replace(/^👑\s*/, '');
     const m = line.match(/^([1-6X])\/6:\s*(.+)$/);
     if (!m) continue;
-    const guesses = m[1] === 'X' ? null : Number(m[1]);
 
-    // collect user IDs
-    let users = [...msg.mentions.users.keys()];
-    if (!users.length) {
-      users = Array.from(m[2].matchAll(/<@!?(\d+)>/g), a => a[1]);
+    const guesses = m[1] === 'X' ? null : Number(m[1]);
+    const mentionPart = m[2];
+
+    // 1) Grab all real <@…> IDs
+    const users = Array.from(
+      mentionPart.matchAll(/<@!?(\d+)>/g),
+      ([, id]) => id
+    );
+
+    // 2) Map any bare-text @usernames
+    const lower = mentionPart.toLowerCase();
+    for (const [username, id] of Object.entries(usernameToId)) {
+      if (lower.includes(username.toLowerCase()) && !users.includes(id)) {
+        users.push(id);
+      }
     }
-    users.forEach(u => results.push({ userId: u, guesses }));
+
+    // 3) Push unique pairs
+    for (const userId of users) {
+      const key = `${userId}:${guesses}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push({ userId, guesses });
+      }
+    }
   }
 
   return results.length ? { puzzle, results } : null;
